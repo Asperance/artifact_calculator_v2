@@ -492,17 +492,39 @@ rebuildTiers();
         const out = container.querySelector("#code-out"); out.value = code; out.select();
       }
     };
-    container.querySelector("#btn-link").onclick = () => {
-      const isShort = container.querySelector("#short-mode").checked;
-      const code = container.querySelector("#code-out").value || makeCode(isShort);
-      try{
-        const url = new URL(window.location.href);
-        url.hash = "build=" + encodeURIComponent(code);
-        history.replaceState(null, "", url.toString());
-        container.querySelector("#btn-link").textContent = "Готово";
-        setTimeout(()=>container.querySelector("#btn-link").textContent = "Ссылка", 1200);
-      }catch(e){}
-    };
+    
+container.querySelector("#btn-link").onclick = async () => {
+  const isShort = container.querySelector("#short-mode")?.checked;
+  const code = container.querySelector("#code-out").value || makeCode(isShort);
+  const url = new URL(window.location.href);
+  url.hash = "build=" + encodeURIComponent(code);
+  history.replaceState(null, "", url.toString());
+  const link = url.toString();
+  try {
+    await navigator.clipboard.writeText(link);
+    container.querySelector("#btn-link").textContent = "Скопировано!";
+  } catch (e) {
+    const ta = document.createElement("textarea");
+    ta.value = link;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    try {
+      document.execCommand("copy");
+      container.querySelector("#btn-link").textContent = "Скопировано!";
+    } catch (e2) {
+      alert("Ссылка на сборку:\n" + link);
+    } finally {
+      document.body.removeChild(ta);
+    }
+  }
+  setTimeout(() => {
+    container.querySelector("#btn-link").textContent = "Ссылка";
+  }, 1200);
+};
+
     container.querySelector("#btn-load").onclick = () => {
       const code = container.querySelector("#code-in").value.trim();
       if(!code){ alert("Введите код сборки."); return; }
