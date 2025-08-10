@@ -281,79 +281,97 @@ document.getElementById('search-input').addEventListener('keydown',e=>{ if(e.key
 rebuildTiers();
 </script>
 
-<!-- ===== Share/Load Module v1.2 (Collapsible) ===== -->
+<!-- ===== Share/Load Module v1.3 (Compact codes + Collapsible) ===== -->
 <script>
 (function(){
-  // ---- Resolve globals defined with const/let or as window props ----
-  function getArr(name){
-    try { if (Array.isArray(eval(name))) return eval(name); } catch(e){}
-    const w = window[name];
-    if (Array.isArray(w)) return w;
-    return null;
+  // ---------- Utilities ----------
+  function getArr(name){ try { if (Array.isArray(eval(name))) return eval(name); } catch(e){} const w = window[name]; if (Array.isArray(w)) return w; return null; }
+  function getVal(name){ try { if (typeof eval(name) !== "undefined") return eval(name); } catch(e){} if (typeof window[name] !== "undefined") return window[name]; return undefined; }
+  function getFn(name){ try { if (typeof eval(name) === "function") return eval(name); } catch(e){} if (typeof window[name] === "function") return window[name]; return null; }
+
+  // UTF-8-safe Base64
+  function b64encode(str){ const enc = new TextEncoder().encode(str); let bin = ""; for (let i=0;i<enc.length;i++) bin += String.fromCharCode(enc[i]); return btoa(bin); }
+  function b64decode(b64){ const bin = atob(b64); const bytes = new Uint8Array(bin.length); for (let i=0;i<bin.length;i++) bytes[i] = bin.charCodeAt(i); return new TextDecoder().decode(bytes); }
+
+  // base62 codec (0-9 A-Z a-z) for non-negative integers
+  const B62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+  function toB62(n){
+    n = Math.floor(Math.max(0, n||0));
+    if (n===0) return "0";
+    let s = "";
+    while(n>0){ s = B62[n%62] + s; n = Math.floor(n/62); }
+    return s;
   }
-  function getVal(name){
-    try { if (typeof eval(name) !== "undefined") return eval(name); } catch(e){}
-    if (typeof window[name] !== "undefined") return window[name];
-    return undefined;
-  }
-  function getFn(name){
-    try { if (typeof eval(name) === "function") return eval(name); } catch(e){}
-    if (typeof window[name] === "function") return window[name];
-    return null;
+  function fromB62(s){
+    let n = 0;
+    for (let i=0;i<s.length;i++){ n = n*62 + B62.indexOf(s[i]); if (B62.indexOf(s[i])<0) throw new Error("bad base62"); }
+    return n;
   }
 
-  // ---- Helpers for UTF-8 safe Base64 ----
-  function b64encode(str){
-    const enc = new TextEncoder().encode(str);
-    let bin = "";
-    for (let i=0; i<enc.length; i++) bin += String.fromCharCode(enc[i]);
-    return btoa(bin);
-  }
-  function b64decode(b64){
-    const bin = atob(b64);
-    const bytes = new Uint8Array(bin.length);
-    for (let i=0; i<bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    return new TextDecoder().decode(bytes);
-  }
-
-  // ---- Codec ----
-  function makeCode(){
+  // ---------- Codecs ----------
+  // v1 (legacy): JSON by names + Base64 (stable to reordering, длиннее)
+  function makeV1(){
     const artifacts = getVal("artifacts");
     const selected  = getArr("selected") || [];
     const a = selected.map(({idx,count})=>({n:artifacts[idx]?.name, c:count})).filter(x=>x.n);
     const payload = { v:1, a };
-    return b64encode(JSON.stringify(payload));
+    return "v1-" + b64encode(JSON.stringify(payload));
+  }
+  function tryLoadV1(code){
+    if (!code.startsWith("v1-")) return false;
+    const json = b64decode(code.slice(3));
+    const obj = JSON.parse(json);
+    if(!obj || obj.v!==1 || !Array.isArray(obj.a)) throw new Error("bad v1 format");
+    restoreByNames(obj.a);
+    return true;
   }
 
-  function loadFromCode(code){
+  // v2 (compact): pairs of base62 index.count joined by '-' (короче, но чувствительно к перестановке списка artifacts)
+  function makeV2(){
+    const selected = getArr("selected") || [];
+    const entries = selected.map(({idx,count}) => `${toB62(idx)}.${toB62(Math.max(1, Number(count)||1))}`);
+    return "v2-" + entries.join("-");
+  }
+  function tryLoadV2(code){
+    // accept either explicit v2- or a bare pair pattern as fallback
+    const body = code.startsWith("v2-") ? code.slice(3) : code;
+    if (!/^[0-9A-Za-z]+\.[0-9A-Za-z]+(?:-[0-9A-Za-z]+\.[0-9A-Za-z]+)*$/.test(body)) return false;
     const artifacts = getVal("artifacts");
     const selected  = getArr("selected");
     const addArtifact = getFn("addArtifact");
     const upd = getFn("upd");
     const renderSel = getFn("renderSel");
     const renderTot = getFn("renderTot");
+    if(!artifacts) throw new Error("no artifacts");
 
-    if(!artifacts){ alert("Не найдена база артефактов."); return; }
+    if (selected){ selected.length = 0; if (renderSel) renderSel(); if (renderTot) renderTot(); }
 
-    let obj;
-    try{
-      const json = b64decode(code.trim());
-      obj = JSON.parse(json);
-    }catch(e){
-      alert("Неверный код сборки.");
-      return;
+    const parts = body.split("-");
+    for (const p of parts){
+      const [i,c] = p.split(".");
+      const idx = fromB62(i);
+      const qty = Math.max(1, fromB62(c));
+      const art = artifacts[idx];
+      if(!art) continue;
+      if (addArtifact) addArtifact(art);
+      if (upd) upd(idx, qty);
     }
-    if(!obj || obj.v!==1 || !Array.isArray(obj.a)){ alert("Неподдерживаемый формат кода."); return; }
+    if (renderSel) renderSel();
+    if (renderTot) renderTot();
+    return true;
+  }
 
-    // Сброс текущей сборки, если она доступна
-    if (selected){
-      selected.length = 0;
-      if (renderSel) renderSel();
-      if (renderTot) renderTot();
-    }
+  function restoreByNames(arr){
+    const artifacts = getVal("artifacts");
+    const selected  = getArr("selected");
+    const addArtifact = getFn("addArtifact");
+    const upd = getFn("upd");
+    const renderSel = getFn("renderSel");
+    const renderTot = getFn("renderTot");
+    if(!artifacts) throw new Error("no artifacts");
 
-    // Восстановление
-    obj.a.forEach(({n,c})=>{
+    if (selected){ selected.length = 0; if (renderSel) renderSel(); if (renderTot) renderTot(); }
+    arr.forEach(({n,c})=>{
       const art = (artifacts||[]).find(x=>x.name===n);
       if(!art) return;
       if (addArtifact) addArtifact(art);
@@ -361,25 +379,47 @@ rebuildTiers();
       const qty = Math.max(1, Number(c)||1);
       if (upd) upd(idx, qty);
     });
-
     if (renderSel) renderSel();
     if (renderTot) renderTot();
   }
 
-  // ---- UI ----
+  function makeCode(isCompact){
+    try{
+      return isCompact ? makeV2() : makeV1();
+    }catch(e){
+      console.error(e);
+      alert("Не удалось сформировать код.");
+      return "";
+    }
+  }
+  function loadFromCode(anyCode){
+    const code = anyCode.trim();
+    try{
+      // Try v2 first (короткий), затем v1 (длинный/совместимый)
+      if (tryLoadV2(code)) return;
+      if (tryLoadV1(code)) return;
+    }catch(e){
+      console.error(e);
+      alert("Ошибка при загрузке кода: " + (e.message || e));
+      return;
+    }
+    // As a final fallback: maybe it's legacy pure Base64 without prefix
+    try{
+      const obj = JSON.parse(b64decode(code));
+      if (obj && obj.v===1 && Array.isArray(obj.a)){ restoreByNames(obj.a); return; }
+    }catch(e){}
+    alert("Неверный или неподдерживаемый код сборки.");
+  }
+
+  // ---------- UI ----------
   function buildUI(){
     const wrap = document.createElement("div");
     wrap.id = "share-wrap";
     wrap.style.marginTop = "16px";
 
-    // Collapsible container
     const details = document.createElement("details");
     details.id = "share-accordion";
-    // Restore previous state
-    try {
-      const saved = localStorage.getItem("shareAccordionOpen");
-      if (saved === "1") details.open = true;
-    } catch(e){}
+    try { const saved = localStorage.getItem("shareAccordionOpen"); if (saved === "1") details.open = true; } catch(e){}
 
     const summary = document.createElement("summary");
     summary.textContent = "Обмен сборками";
@@ -398,10 +438,14 @@ rebuildTiers();
     container.style.border = "1px solid var(--border)";
     container.style.borderRadius = "8px";
     container.style.background = "var(--bg-elevated)";
-    
+
     container.innerHTML = `
       <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
-        <button id="btn-gen" class="tier-btn" type="button">Сохранить в код</button>
+        <label style="display:flex;align-items:center;gap:6px;">
+          <input id="short-mode" type="checkbox" />
+          <span>Короткий код</span>
+        </label>
+        <button id="btn-gen" class="tier-btn" type="button">Сохранить</button>
         <input id="code-out" type="text" placeholder="Код сборки" readonly
                style="flex:1;min-width:240px;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);" />
         <button id="btn-copy" class="tier-btn" type="button" title="Скопировать код">Копировать</button>
@@ -410,10 +454,11 @@ rebuildTiers();
       <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:10px;">
         <input id="code-in" type="text" placeholder="Вставьте код сборки сюда"
                style="flex:1;min-width:240px;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);" />
-        <button id="btn-load" class="tier-btn" type="button">Загрузить из кода</button>
+        <button id="btn-load" class="tier-btn" type="button">Загрузить</button>
       </div>
-      <div style="opacity:.8;margin-top:8px;font-size:12px;">
-        Панель можно свернуть. Состояние запоминается. Кнопка «Ссылка» добавляет код в адресную строку (hash).
+      <div style="opacity:.8;margin-top:8px;font-size:12px;line-height:1.4;">
+        <div>• <b>Короткий код (v2)</b> значительно короче, но зависит от порядка массива <code>artifacts</code> (если он изменится — старые коды могут не совпасть).</div>
+        <div>• <b>Совместимый код (v1)</b> длиннее, но стабилен — основан на названиях артефактов.</div>
       </div>
     `;
 
@@ -421,33 +466,35 @@ rebuildTiers();
     details.appendChild(container);
     wrap.appendChild(details);
 
-    // Insert after search block if present
     const search = document.getElementById("search-container");
     (search?.parentNode || document.body).insertBefore(wrap, search?.nextSibling || null);
 
-    // Events
-    details.addEventListener("toggle", () => {
-      try { localStorage.setItem("shareAccordionOpen", details.open ? "1" : "0"); } catch(e){}
-    });
+    details.addEventListener("toggle", () => { try { localStorage.setItem("shareAccordionOpen", details.open ? "1" : "0"); } catch(e){} });
+
+    // restore "short mode" preference
+    const shortPref = localStorage.getItem("shareShortMode")==="1";
+    container.querySelector("#short-mode").checked = shortPref;
 
     container.querySelector("#btn-gen").onclick = () => {
-      const code = makeCode();
+      const isShort = container.querySelector("#short-mode").checked;
+      const code = makeCode(isShort);
+      if (!code) return;
+      try { localStorage.setItem("shareShortMode", isShort ? "1" : "0"); } catch(e){}
       container.querySelector("#code-out").value = code;
     };
     container.querySelector("#btn-copy").onclick = async () => {
-      const code = container.querySelector("#code-out").value || makeCode();
-      try{
-        await navigator.clipboard.writeText(code);
+      const isShort = container.querySelector("#short-mode").checked;
+      const code = container.querySelector("#code-out").value || makeCode(isShort);
+      try{ await navigator.clipboard.writeText(code);
         container.querySelector("#btn-copy").textContent = "Скопировано!";
         setTimeout(()=>container.querySelector("#btn-copy").textContent = "Копировать", 1200);
       }catch(e){
-        const out = container.querySelector("#code-out");
-        out.value = code;
-        out.select();
+        const out = container.querySelector("#code-out"); out.value = code; out.select();
       }
     };
     container.querySelector("#btn-link").onclick = () => {
-      const code = container.querySelector("#code-out").value || makeCode();
+      const isShort = container.querySelector("#short-mode").checked;
+      const code = container.querySelector("#code-out").value || makeCode(isShort);
       try{
         const url = new URL(window.location.href);
         url.hash = "build=" + encodeURIComponent(code);
@@ -467,7 +514,6 @@ rebuildTiers();
     if(m){
       try{
         const code = decodeURIComponent(m[1]);
-        // раскрыть панель при авто-загрузке, чтобы пользователь видел результат
         details.open = true;
         container.querySelector("#code-in").value = code;
         loadFromCode(code);
@@ -475,11 +521,7 @@ rebuildTiers();
     }
   }
 
-  if (document.readyState === "loading"){
-    document.addEventListener("DOMContentLoaded", buildUI);
-  }else{
-    buildUI();
-  }
+  if (document.readyState === "loading"){ document.addEventListener("DOMContentLoaded", buildUI); } else { buildUI(); }
 })();
 </script>
 
